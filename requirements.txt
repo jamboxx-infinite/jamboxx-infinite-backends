@@ -1,25 +1,36 @@
-# FastAPI 相关依赖
-fastapi[all]>=0.68.0,<1.0.0
-uvicorn[standard]>=0.15.0,<1.0.0
-pydantic>=1.8.2,<2.0.0
+einops
+fairseq
+flask
+flask_cors
+gin
+gin_config
+librosa
+local_attention
+matplotlib
+numpy==1.26.4
+praat-parselmouth
+pyworld
+PyYAML
+resampy
+scikit_learn
+scipy
+SoundFile
+tensorboard
+torchcrepe
+torchfcpe
+tqdm
+transformers
+wave
+FreeSimpleGUI
+sounddevice
+gradio
 
-# 异步HTTP客户端
-aiohttp>=3.8.1,<4.0.0
-
-# 同步HTTP客户端
-requests>=2.28.0,<3.0.0
-
-# 环境变量管理
-python-dotenv>=0.19.0
-
-# 工具库
-python-multipart>=0.0.5
-aiofiles>=0.8.0
-typing-extensions>=4.2.0
-
-# 时间处理
-pytz>=2021.3
-
-# 测试工具（可选）
-pytest>=6.2.5
-pytest-asyncio>=0.18.0
+# FastAPI related
+fastapi
+uvicorn
+python-multipart
+aiofiles
+python-jose[cryptography]
+passlib[bcrypt]
+pydantic
+starlette
