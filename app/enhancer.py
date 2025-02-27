@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from nsf_hifigan.nvSTFT import STFT
-from nsf_hifigan.models import load_model
+from app.nsf_hifigan.nvSTFT import STFT
+from app.nsf_hifigan.models import load_model
 from torchaudio.transforms import Resample
 
 class Enhancer:
