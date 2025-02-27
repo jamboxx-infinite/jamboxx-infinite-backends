@@ -6,7 +6,7 @@ import torch.nn as nn
 from torch.nn.utils import weight_norm
 
 from .pcmer import PCmer
-from diffusion.model_conformer_naive import ConformerNaiveEncoder
+from app.diffusion.model_conformer_naive import ConformerNaiveEncoder
 
 
 
