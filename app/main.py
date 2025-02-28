@@ -1,10 +1,10 @@
 from fastapi import FastAPI
-from app.routers import example_router
+from app.routers import router
 
 app = FastAPI(title="Jamboxx Backend API")
 
 # 注册路由
-app.include_router(example_router.router)
+app.include_router(router.router)
 
 @app.get("/ping")
 def ping():
