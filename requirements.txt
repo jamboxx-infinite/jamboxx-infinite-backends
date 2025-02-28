@@ -24,6 +24,7 @@ wave
 FreeSimpleGUI
 sounddevice
 gradio
+nuitka
 
 # FastAPI related
 fastapi

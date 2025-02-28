@@ -1,0 +1,9 @@
+# Ignore model files
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Allow model configs
+!*.yaml
+!*.json

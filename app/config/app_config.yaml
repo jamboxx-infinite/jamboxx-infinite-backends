@@ -1,0 +1,21 @@
+app:
+  name: "Jamboxx Infinite"
+  version: "1.0.0"
+  description: "Voice Conversion Backend Service"
+
+models:
+  path: "models"
+  hubert:
+    path: "models/hubert/hubert_soft.pt"
+  rmvpe:
+    path: "models/rmvpe/rmvpe.pt"
+  ddsp:
+    path: "models/ddsp/model.pt"
+    config: "models/ddsp/config.yaml"
+  enhancer:
+    path: "models/enhancer/nsf_hifigan.pt"
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
