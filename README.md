@@ -14,11 +14,20 @@ A FastAPI-based backend service for DDSP-SVC voice conversion and audio processi
 
 ## Requirements
 
-- Python 3.9+
+- Windows 10/11 (64-bit)
+- Visual C++ Redistributable 2019 or later
 - CUDA-compatible GPU (recommended)
 - FFmpeg
 
 ## Installation
+
+### Method 1: Using Pre-compiled Executable (Windows Only)
+
+1. Download the latest release from the releases page
+2. Extract the archive to your desired location
+3. Run `start.bat` in the extracted folder
+
+### Method 2: From Source
 
 1. Clone the repository:
 ```bash
@@ -41,15 +50,27 @@ cp .env.example .env
 
 ### Running the Server
 
-Development mode:
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+Using pre-compiled executable:
+```batch
+cd dist\main.dist
+start.bat
 ```
 
 Production mode:
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+### Building from Source
+
+To compile the application into a standalone executable:
+
+```batch
+cd scripts
+build.bat
+```
+
+The compiled executable and required files will be available in the `dist/main.dist` directory.
 
 ### API Endpoints
 
@@ -95,11 +116,23 @@ jamboxx_infinite_backends/
 │   ├── core/
 │   ├── utils/
 │   └── schemas/
+├── scripts/
+│   ├── build.bat
+│   └── download_models.py
+├── dist/
+│   └── main.dist/
 ├── tests/
 ├── requirements.txt
 ├── Dockerfile
 └── README.md
 ```
+
+## Building Notes
+
+- Compilation requires approximately 2GB of disk space
+- First startup may take longer than subsequent launches
+- Compiled version includes all necessary dependencies
+- Target system must have Visual C++ Redistributable 2019 or later installed
 
 ## Acknowledgments
 
