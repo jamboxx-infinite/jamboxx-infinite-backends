@@ -10,6 +10,7 @@ from ..services.separator_service import AudioSeparatorService
 
 router = APIRouter()
 separator_service = AudioSeparatorService()
+ddsp_service = ddsp_service.DDSPService()
 
 class ProcessConfig(BaseModel):
     speaker_id: int = 0
@@ -78,33 +79,6 @@ async def get_speakers():
         return JSONResponse(content={"speakers": speakers})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/voice/analyze")
-async def analyze_voice(
-    file: UploadFile = File(...),
-):
-    """
-    分析音频特征
-    :param file: 上传的音频文件
-    :return: 音频特征数据
-    """
-    try:
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-        await file.seek(0)
-        contents = await file.read()
-        temp_file.write(contents)
-        temp_file.close()
-        
-        # 分析音频特征
-        features = ddsp_service.analyze_audio(temp_file.name)
-        
-        return JSONResponse(content=features)
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    finally:
-        os.unlink(temp_file.name)
 
 @router.post("/model/load")
 async def load_model(
