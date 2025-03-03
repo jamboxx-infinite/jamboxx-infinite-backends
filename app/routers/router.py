@@ -6,8 +6,10 @@ import soundfile as sf
 from pydantic import BaseModel
 import tempfile
 from app.services import ddsp_service
+from ..services.separator_service import AudioSeparatorService
 
 router = APIRouter()
+separator_service = AudioSeparatorService()
 
 class ProcessConfig(BaseModel):
     speaker_id: int = 0
@@ -128,3 +130,47 @@ async def get_model_info():
         return JSONResponse(content=model_info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/audio/separate")
+async def separate_audio(
+    file: UploadFile = File(...),
+):
+    """
+    分离音频中的人声和伴奏
+    """
+    try:
+        # 保存上传文件
+        temp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        temp_vocals = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        temp_instruments = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        
+        await file.seek(0)
+        contents = await file.read()
+        temp_input.write(contents)
+        temp_input.close()
+        
+        # 执行分离
+        vocals, instruments, sr = await separator_service.separate_tracks(temp_input.name)
+        
+        # 保存结果
+        sf.write(temp_vocals.name, vocals, sr)
+        sf.write(temp_instruments.name, instruments, sr)
+        
+        # 返回结果
+        return {
+            "vocals": FileResponse(
+                temp_vocals.name,
+                media_type='audio/wav',
+                filename='vocals.wav'
+            ),
+            "instruments": FileResponse(
+                temp_instruments.name, 
+                media_type='audio/wav',
+                filename='instruments.wav'
+            )
+        }
+    finally:
+        # 清理临时文件
+        os.unlink(temp_input.name)
+        os.unlink(temp_vocals.name)
+        os.unlink(temp_instruments.name)

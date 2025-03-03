@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile
 from app.ddsp.vocoder import load_model, F0_Extractor, Volume_Extractor, Units_Encoder
 from app.enhancer import Enhancer
 import torch
