@@ -56,9 +56,20 @@ cd dist\main.dist
 start.bat
 ```
 
+Development mode:
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
 Production mode:
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Using Docker:
+```bash
+docker build -t jamboxx-backend .
+docker run -p 8000:8000 jamboxx-backend
 ```
 
 ### Building from Source
