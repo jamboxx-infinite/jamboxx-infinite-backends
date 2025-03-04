@@ -29,6 +29,7 @@ torchcrepe>=0.0.19
 # ML Tools & Transformers
 scikit-learn>=1.0.2
 transformers>=4.30.0,<5.0.0
+tensorboardX
 
 # Audio Separation (Fixed Versions for Compatibility)
 demucs==4.0.0

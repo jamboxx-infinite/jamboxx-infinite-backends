@@ -1,0 +1,43 @@
+# Voice Conversion Configuration
+
+# Audio Processing Settings
+audio:
+  input:
+    sample_rate: 44100
+    channels: 1
+    format: "wav"
+  output:
+    sample_rate: 44100
+    format: "wav"
+    bit_depth: 16
+
+# F0 (Pitch) Settings
+pitch:
+  f0_min: 50
+  f0_max: 1100
+  hop_length: 512
+  f0_method: "rmvpe"  # rmvpe, parselmouth, dio
+  octave_adjust: 0
+
+# Voice Conversion Parameters
+conversion:
+  speaker_id: 0
+  pitch_adjust: 0.0  # semitones, -12 to 12
+  volume_normalize: true
+  threshold: -60     # volume threshold in dB
+  enhance: true      # use audio enhancer
+
+# Performance Settings
+performance:
+  device: "cuda"     # cuda or cpu
+  batch_size: 1
+  num_threads: 4
+  use_cache: true
+  cache_dir: "cache"
+
+# Enhancement Settings
+enhance:
+  type: "nsf-hifigan"
+  strength: 0.5      # 0.0 to 1.0
+  noise_scale: 0.3
+  denoise: true

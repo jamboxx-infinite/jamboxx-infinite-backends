@@ -29,3 +29,6 @@ env/
 # IDE
 .vscode/
 .idea/
+
+# models
+.pt
