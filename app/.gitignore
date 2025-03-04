@@ -31,4 +31,4 @@ env/
 .idea/
 
 # models
-.pt
+*.pt
