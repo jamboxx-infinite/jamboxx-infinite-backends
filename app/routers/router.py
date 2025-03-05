@@ -6,72 +6,81 @@ import numpy as np
 import soundfile as sf
 from pydantic import BaseModel
 import tempfile
-from app.services import ddsp_service
+from app.services.ddsp_service import DDSPService
 from ..services.separator_service import AudioSeparatorService
 import logging
+from typing import Optional, Dict
 
 router = APIRouter()
 separator_service = AudioSeparatorService()
-ddsp_service = ddsp_service.DDSPService()
+ddsp_service = DDSPService()
 
 logger = logging.getLogger(__name__)
 
 class ProcessConfig(BaseModel):
-    speaker_id: int = 0
-    pitch_adjust: float = 0
+    speaker_id: int = 1
+    key: float = 0  # 变调参数
+    enhance: bool = True
+    pitch_extractor: str = 'rmvpe'
     f0_min: float = 50
     f0_max: float = 1100
     threhold: float = -60
-    enhance: bool = True
+    enhancer_adaptive_key: float = 0
+    spk_mix_dict: Optional[Dict[str, float]] = None
 
 @router.post("/voice/convert")
 async def convert_voice(
     file: UploadFile = File(...),
-    config: ProcessConfig = Form(...),
+    config: ProcessConfig = Form(...)
 ):
-    """
-    音频转换主接口
-    :param file: 上传的音频文件
-    :param config: 转换配置参数
-    :return: 转换后的音频文件
-    """
+    """音频转换主接口"""
+    temp_files = []
     try:
-        # 创建临时文件保存上传的音频
-        temp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-        temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        # 创建输入临时文件
+        input_path = f"{tempfile.gettempdir()}/input_{uuid.uuid4()}.wav"
+        output_path = f"{tempfile.gettempdir()}/output_{uuid.uuid4()}.wav"
+        temp_files.extend([input_path, output_path])
         
-        await file.seek(0)
-        contents = await file.read()
-        temp_input.write(contents)
-        temp_input.close()
+        # 保存上传的文件
+        content = await file.read()
+        with open(input_path, "wb") as f:
+            f.write(content)
+            
+        logger.info(f"Processing audio file: {input_path}")
         
-        # 调用DDSP处理逻辑
-        processed_audio, sr = ddsp_service.process_audio(
-            temp_input.name,
-            config.pitch_adjust,
-            config.speaker_id,
-            config.f0_min,
-            config.f0_max,
-            config.threhold,
-            config.enhance
+        # 调用infer方法进行处理
+        result_path = ddsp_service.infer(
+            input_path=input_path,
+            output_path=output_path,
+            spk_id=config.speaker_id,
+            spk_mix_dict=config.spk_mix_dict,
+            key=config.key,
+            enhance=config.enhance,
+            pitch_extractor=config.pitch_extractor,
+            f0_min=config.f0_min,
+            f0_max=config.f0_max,
+            threhold=config.threhold,
+            enhancer_adaptive_key=config.enhancer_adaptive_key
         )
         
-        # 保存处理后的音频
-        sf.write(temp_output.name, processed_audio, sr)
-        
         return FileResponse(
-            temp_output.name,
+            result_path,
             media_type='audio/wav',
             filename=f'converted_{uuid.uuid4()}.wav'
         )
         
     except Exception as e:
+        logger.error(f"Voice conversion failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:
-        # 清理临时文件
-        os.unlink(temp_input.name)
-        os.unlink(temp_output.name)
+        # 清理所有临时文件
+        for path in temp_files:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {path}: {str(e)}")
 
 @router.get("/speakers")
 async def get_speakers():
@@ -93,7 +102,7 @@ async def load_model(
     :param model_path: 模型路径
     """
     try:
-        ddsp_service.load_model(model_path)
+        ddsp_service.__init__(model_path)
         return JSONResponse(content={"message": "Model loaded successfully"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -104,6 +113,7 @@ async def get_model_info():
     获取当前加载的模型信息
     """
     try:
+        global ddsp_service
         model_info = ddsp_service.get_model_info()
         return JSONResponse(content=model_info)
     except Exception as e:
