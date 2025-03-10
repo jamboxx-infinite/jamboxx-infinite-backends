@@ -1,36 +1,55 @@
-einops
-fairseq
-flask
-flask_cors
-gin
-gin_config
-librosa
-local_attention
-matplotlib
-numpy==1.26.4
-praat-parselmouth
-pyworld
-PyYAML
-resampy
-scikit_learn
-scipy
-SoundFile
-tensorboard
-torchcrepe
-torchfcpe
-tqdm
-transformers
-wave
-FreeSimpleGUI
-sounddevice
-gradio
+# FastAPI Framework & Dependencies
+fastapi[all]>=0.68.0,<1.0.0
+uvicorn[standard]>=0.15.0,<1.0.0
+pydantic>=1.8.2,<2.0.0
+python-multipart>=0.0.5
+aiofiles>=0.8.0
+starlette>=0.27.0
 
-# FastAPI related
-fastapi
-uvicorn
-python-multipart
-aiofiles
-python-jose[cryptography]
-passlib[bcrypt]
-pydantic
-starlette
+# HTTP Clients & Networking
+aiohttp>=3.8.0,<4.0.0
+requests>=2.28.0,<3.0.0
+
+# Deep Learning & PyTorch
+torch>=2.0.0,<3.0.0
+torchaudio>=2.0.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+einops>=0.6.0,<1.0.0
+
+# Audio Processing
+scipy>=1.10.0,<2.0.0
+librosa>=0.10.0,<1.0.0
+soundfile>=0.12.0
+sounddevice>=0.4.6
+pyworld>=0.3.0
+praat-parselmouth>=0.4.3
+resampy>=0.4.2
+torchcrepe>=0.0.19
+
+# ML Tools & Transformers
+scikit-learn>=1.0.2
+transformers>=4.30.0,<5.0.0
+tensorboardX
+
+# Audio Separation (Fixed Versions for Compatibility)
+demucs==4.0.0
+antlr4-python3-runtime==4.8
+omegaconf>=2.0.6
+hydra-core>=1.0.7
+
+# Configuration & Environment
+python-dotenv>=0.19.0
+PyYAML>=6.0.0
+
+# Progress & Utilities
+tqdm>=4.65.0
+
+# Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Optional Development Dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.18.0
+black>=22.0.0
+flake8>=4.0.0
