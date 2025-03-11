@@ -34,7 +34,7 @@ class F0_Extractor:
         if f0_extractor == 'rmvpe':
             if 'rmvpe' not in F0_KERNEL :
                 from app.encoder.rmvpe import RMVPE
-                F0_KERNEL['rmvpe'] = RMVPE('app/pretrain/rmvpe/model.pt', hop_length=160)
+                F0_KERNEL['rmvpe'] = RMVPE('pretrain/rmvpe/model.pt', hop_length=160)
             self.rmvpe = F0_KERNEL['rmvpe']
         if f0_extractor == 'fcpe':
             self.device_fcpe = 'cuda' if torch.cuda.is_available() else 'cpu'

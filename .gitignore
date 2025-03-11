@@ -37,3 +37,5 @@ env/
 *.wav
 *.mp3
 *.flac
+
+*.npy

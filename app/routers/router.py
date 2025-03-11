@@ -7,6 +7,8 @@ import numpy as np
 import soundfile as sf
 from pydantic import BaseModel
 import tempfile
+import aiofiles  # 添加这行
+import io  # 添加这行
 from app.services.ddsp_service import DDSPService
 from ..services.separator_service import AudioSeparatorService
 import logging
@@ -561,6 +563,7 @@ async def process_audio_pipeline(
     
     try:
         logger.info("Starting audio processing pipeline")
+        
         # Create input temp file
         input_path = f"{tempfile.gettempdir()}/pipeline_input_{uuid.uuid4()}.wav"
         temp_files.append(input_path)
@@ -575,32 +578,88 @@ async def process_audio_pipeline(
         
         # Step 1: Separate audio tracks
         logger.info("Step 1: Separating audio tracks")
-        separation_result = await separate_audio_internal(input_path)
-        vocals_path = separation_result["vocals_path"]
-        instruments_path = separation_result["instruments_path"]
-        vocals_url = separation_result["vocals_url"]
-        instruments_url = separation_result["instruments_url"]
-        sr = separation_result["sample_rate"]
         
+        # 不要创建新的 UploadFile 对象，而是使用分离服务直接处理文件
+        vocals_path = f"{tempfile.gettempdir()}/vocals_{uuid.uuid4()}.wav"
+        instruments_path = f"{tempfile.gettempdir()}/instruments_{uuid.uuid4()}.wav"
         temp_files.extend([vocals_path, instruments_path])
+
+        # 直接使用 separator_service 处理输入文件
+        vocals, instruments, sr = await separator_service.separate_tracks(input_path)
+
+        # 处理并保存分离的音频
+        # 确保数据格式正确
+        if vocals.ndim == 3:  # 如果 [batch, channels, samples]
+            vocals = vocals[0].T  # 转换为 [samples, channels]
+            instruments = instruments[0].T
+        elif vocals.ndim == 2 and vocals.shape[0] <= 2:  # 如果 [channels, samples]
+            vocals = vocals.T     # 转换为 [samples, channels]
+            instruments = instruments.T
+
+        # 确保正确的数据类型
+        if not isinstance(vocals, np.ndarray):
+            vocals = vocals.numpy() if hasattr(vocals, 'numpy') else np.array(vocals)
+        if not isinstance(instruments, np.ndarray):
+            instruments = instruments.numpy() if hasattr(instruments, 'numpy') else np.array(instruments)
+
+        # 转换为 float32 兼容性
+        vocals = vocals.astype(np.float32)
+        instruments = instruments.astype(np.float32)
+
+        # 检查无效值
+        if np.isnan(vocals).any() or np.isinf(vocals).any():
+            logger.warning("Found NaN or Inf in vocals, replacing with zeros")
+            vocals = np.nan_to_num(vocals)
+        if np.isnan(instruments).any() or np.isinf(instruments).any():
+            logger.warning("Found NaN or Inf in instruments, replacing with zeros")
+            instruments = np.nan_to_num(instruments)
+
+        # 归一化音频范围到 [-1, 1]
+        max_val = max(np.abs(vocals).max(), np.abs(instruments).max())
+        if max_val > 1.0:
+            vocals /= max_val
+            instruments /= max_val
+
+        # 保存分离后的音频到临时文件
+        sf.write(vocals_path, vocals, sr)
+        sf.write(instruments_path, instruments, sr)
+
+        # 保存到静态目录
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        separator_dir = os.path.join(static_dir, "separator")
+        os.makedirs(separator_dir, exist_ok=True)
+
+        static_vocals_path = os.path.join(separator_dir, f"vocals_{uuid.uuid4()}.wav")
+        static_instruments_path = os.path.join(separator_dir, f"instruments_{uuid.uuid4()}.wav")
+
+        with open(vocals_path, 'rb') as f_in:
+            with open(static_vocals_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        with open(instruments_path, 'rb') as f_in:
+            with open(static_instruments_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        vocals_url = f"/static/separator/{os.path.basename(static_vocals_path)}"
+        instruments_url = f"/static/separator/{os.path.basename(static_instruments_path)}"
+
         pipeline_steps["separation"] = {
-            "vocals_path": vocals_path,
-            "instruments_path": instruments_path,
             "vocals_url": vocals_url,
-            "instruments_url": instruments_url,
-            "sample_rate": sr
+            "instruments_url": instruments_url
         }
         
         # Step 2: Convert vocals
         logger.info("Step 2: Converting vocals")
-        converted_vocals_path = f"{tempfile.gettempdir()}/converted_vocals_{uuid.uuid4()}.wav"
-        temp_files.append(converted_vocals_path)
         
-        # Call infer method for processing
-        conversion_result = await convert_voice_internal(
-            vocals_path,
-            converted_vocals_path,
-            speaker_id=speaker_id,
+        # 直接调用 ddsp_service.infer 而不是 convert_voice 端点
+        converted_vocals_path = f"{tempfile.gettempdir()}/converted_{uuid.uuid4()}.wav"
+        temp_files.append(converted_vocals_path)
+
+        result_path = ddsp_service.infer(
+            input_path=vocals_path,
+            output_path=converted_vocals_path,
+            spk_id=speaker_id,
             key=key,
             enhance=enhance,
             pitch_extractor=pitch_extractor,
@@ -609,26 +668,56 @@ async def process_audio_pipeline(
             threhold=threhold,
             enhancer_adaptive_key=enhancer_adaptive_key
         )
-        
-        converted_vocals_url = conversion_result["file_url"]
-        pipeline_steps["conversion"] = conversion_result
+
+        # 保存到静态目录
+        convert_dir = os.path.join(static_dir, "converter")
+        os.makedirs(convert_dir, exist_ok=True)
+
+        static_converted_path = os.path.join(convert_dir, f"converted_{uuid.uuid4()}.wav")
+
+        with open(result_path, 'rb') as f_in:
+            with open(static_converted_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        converted_vocals_url = f"/static/converter/{os.path.basename(static_converted_path)}"
+
+        pipeline_steps["conversion"] = {
+            "vocals_url": converted_vocals_url
+        }
         
         # Step 3: Merge converted vocals with original instruments
         logger.info("Step 3: Merging converted vocals with original instruments")
-        merged_output_path = f"{tempfile.gettempdir()}/final_output_{uuid.uuid4()}.wav"
-        temp_files.append(merged_output_path)
-        
-        # Call merge tracks function
-        merge_result = await merge_audio_internal(
-            converted_vocals_path,
-            instruments_path,
-            merged_output_path,
+
+        # 直接使用 separator_service 而不是调用端点
+        merged_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        temp_files.append(merged_path)
+
+        merged_result = await separator_service.merge_tracks(
+            vocals_path=converted_vocals_path,
+            instruments_path=instruments_path,
+            output_path=merged_path,
             vocals_volume=vocals_volume,
             instruments_volume=instruments_volume
         )
-        
-        merged_url = merge_result["file_url"]
-        pipeline_steps["merge"] = merge_result
+
+        # 保存到静态目录
+        merge_dir = os.path.join(static_dir, "merge")
+        os.makedirs(merge_dir, exist_ok=True)
+        final_merged_filename = f"merged_{uuid.uuid4()}.wav"
+        static_merged_path = os.path.join(merge_dir, final_merged_filename)
+
+        # 复制文件到静态目录
+        with open(merged_result, 'rb') as f_in:
+            with open(static_merged_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        merged_url = f"/static/merge/{os.path.basename(static_merged_path)}"
+
+        pipeline_steps["merge"] = {
+            "file_url": merged_url
+        }
         
         # Save to static directory under the pipeline subfolder
         static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
@@ -638,10 +727,14 @@ async def process_audio_pipeline(
         final_output_filename = f"processed_{uuid.uuid4()}.wav"
         pipeline_output_path = os.path.join(pipeline_dir, final_output_filename)
         
-        # Copy the final output to the static directory
-        with open(merge_result["file_path"], 'rb') as f_in:
-            with open(pipeline_output_path, 'wb') as f_out:
-                f_out.write(f_in.read())
+        # Get path to merged file
+        source_path = os.path.join(static_dir, merged_url.lstrip('/static/'))
+        
+        # Copy the merged file to the pipeline directory
+        async with aiofiles.open(source_path, 'rb') as src_file:
+            content = await src_file.read()
+            async with aiofiles.open(pipeline_output_path, 'wb') as dst_file:
+                await dst_file.write(content)
                 
         # Build URL path for the final output
         final_url_path = f"/static/pipeline/{final_output_filename}"
@@ -675,7 +768,6 @@ async def process_audio_pipeline(
         
     except Exception as e:
         logger.error(f"Audio processing pipeline failed: {str(e)}", exc_info=True)
-        # Include the processing steps that were completed
         error_response = {
             "status": "error",
             "message": str(e),
@@ -691,152 +783,3 @@ async def process_audio_pipeline(
                     os.unlink(path)
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {path}: {str(e)}")
-
-
-# Internal functions for the pipeline, not directly exposed as endpoints
-async def separate_audio_internal(input_path: str) -> Dict:
-    """Internal function to separate audio tracks"""
-    try:
-        # Separate tracks
-        vocals, instruments, sr = await separator_service.separate_tracks(input_path)
-        
-        # Save separated audio
-        vocals_path = f"{tempfile.gettempdir()}/vocals_{uuid.uuid4()}.wav"
-        instruments_path = f"{tempfile.gettempdir()}/instruments_{uuid.uuid4()}.wav"
-        
-        # Process and save audio data
-        # Ensure audio data has correct format and dimensions
-        if vocals.ndim == 3:  # If [batch, channels, samples]
-            vocals = vocals[0].T  # Convert to [samples, channels]
-            instruments = instruments[0].T
-        elif vocals.ndim == 2 and vocals.shape[0] <= 2:  # If [channels, samples]
-            vocals = vocals.T     # Convert to [samples, channels]
-            instruments = instruments.T
-            
-        # Ensure correct data type and normalization
-        vocals = np.nan_to_num(vocals.astype(np.float32))
-        instruments = np.nan_to_num(instruments.astype(np.float32))
-        
-        # Save processed audio to temp files
-        sf.write(vocals_path, vocals, sr)
-        sf.write(instruments_path, instruments, sr)
-        
-        # Save to static directory under separator subfolder
-        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-        separator_dir = os.path.join(static_dir, "separator")
-        os.makedirs(separator_dir, exist_ok=True)
-        
-        # Copy files to static directory
-        static_vocals_path = os.path.join(separator_dir, f"vocals_{uuid.uuid4()}.wav")
-        static_instruments_path = os.path.join(separator_dir, f"instruments_{uuid.uuid4()}.wav")
-        
-        with open(vocals_path, 'rb') as f_in:
-            with open(static_vocals_path, 'wb') as f_out:
-                f_out.write(f_in.read())
-                
-        with open(instruments_path, 'rb') as f_in:
-            with open(static_instruments_path, 'wb') as f_out:
-                f_out.write(f_in.read())
-        
-        # Build URL paths
-        vocals_url = f"/static/separator/{os.path.basename(static_vocals_path)}"
-        instruments_url = f"/static/separator/{os.path.basename(static_instruments_path)}"
-        
-        # Return paths
-        return {
-            "vocals_path": vocals_path,
-            "instruments_path": instruments_path,
-            "vocals_url": vocals_url,
-            "instruments_url": instruments_url,
-            "sample_rate": sr
-        }
-        
-    except Exception as e:
-        logger.error(f"Internal separation failed: {str(e)}", exc_info=True)
-        raise RuntimeError(f"Audio separation failed: {str(e)}")
-
-
-async def convert_voice_internal(input_path: str, output_path: str, **params) -> Dict:
-    """Internal function to convert vocals"""
-    try:
-        # Call infer method for processing
-        result_path = ddsp_service.infer(
-            input_path=input_path,
-            output_path=output_path,
-            spk_id=params.get('speaker_id', 1),
-            key=params.get('key', 0),
-            enhance=params.get('enhance', True),
-            pitch_extractor=params.get('pitch_extractor', 'rmvpe'),
-            f0_min=params.get('f0_min', 50),
-            f0_max=params.get('f0_max', 1100),
-            threhold=params.get('threhold', -60),
-            enhancer_adaptive_key=params.get('enhancer_adaptive_key', 0)
-        )
-        
-        # Save to static directory
-        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-        convert_dir = os.path.join(static_dir, "convert")
-        os.makedirs(convert_dir, exist_ok=True)
-        
-        static_output_path = os.path.join(convert_dir, f"converted_{uuid.uuid4()}.wav")
-        
-        with open(result_path, 'rb') as f_in:
-            with open(static_output_path, 'wb') as f_out:
-                file_content = f_in.read()
-                f_out.write(file_content)
-        
-        # Build URL path
-        url_path = f"/static/convert/{os.path.basename(static_output_path)}"
-        
-        return {
-            "status": "success", 
-            "message": "Voice conversion complete", 
-            "file_url": url_path,
-            "file_path": result_path,
-            "file_size": os.path.getsize(result_path)
-        }
-        
-    except Exception as e:
-        logger.error(f"Internal voice conversion failed: {str(e)}", exc_info=True)
-        raise RuntimeError(f"Voice conversion failed: {str(e)}")
-
-
-async def merge_audio_internal(vocals_path: str, instruments_path: str, output_path: str, 
-                               vocals_volume: float = 1.5, instruments_volume: float = 1.0) -> Dict:
-    """Internal function to merge audio tracks"""
-    try:
-        # Call the merge_tracks function
-        merged_path = await separator_service.merge_tracks(
-            vocals_path=vocals_path,
-            instruments_path=instruments_path,
-            output_path=output_path,
-            vocals_volume=vocals_volume,
-            instruments_volume=instruments_volume
-        )
-        
-        # Save to static directory
-        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-        merge_dir = os.path.join(static_dir, "merge")
-        os.makedirs(merge_dir, exist_ok=True)
-        
-        static_output_path = os.path.join(merge_dir, f"merged_{uuid.uuid4()}.wav")
-        
-        with open(merged_path, 'rb') as f_in:
-            with open(static_output_path, 'wb') as f_out:
-                file_content = f_in.read()
-                f_out.write(file_content)
-        
-        # Build URL path
-        url_path = f"/static/merge/{os.path.basename(static_output_path)}"
-        
-        return {
-            "status": "success",
-            "message": "Audio tracks merged successfully",
-            "file_url": url_path,
-            "file_path": merged_path,
-            "file_size": os.path.getsize(merged_path)
-        }
-        
-    except Exception as e:
-        logger.error(f"Internal audio merging failed: {str(e)}", exc_info=True)
-        raise RuntimeError(f"Audio merging failed: {str(e)}")
