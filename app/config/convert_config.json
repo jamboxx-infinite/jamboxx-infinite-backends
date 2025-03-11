@@ -1,0 +1,10 @@
+{
+    "speaker_id": 1,
+    "key": 0,
+    "enhance": true,
+    "pitch_extractor": "rmvpe",
+    "f0_min": 50,
+    "f0_max": 1100,
+    "threhold": -60,
+    "enhancer_adaptive_key": 0
+}

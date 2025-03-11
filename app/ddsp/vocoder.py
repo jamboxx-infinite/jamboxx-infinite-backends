@@ -33,8 +33,8 @@ class F0_Extractor:
             self.resample_kernel = CREPE_RESAMPLE_KERNEL[key_str]
         if f0_extractor == 'rmvpe':
             if 'rmvpe' not in F0_KERNEL :
-                from encoder.rmvpe import RMVPE
-                F0_KERNEL['rmvpe'] = RMVPE('pretrain/rmvpe/model.pt', hop_length=160)
+                from app.encoder.rmvpe import RMVPE
+                F0_KERNEL['rmvpe'] = RMVPE('app/pretrain/rmvpe/model.pt', hop_length=160)
             self.rmvpe = F0_KERNEL['rmvpe']
         if f0_extractor == 'fcpe':
             self.device_fcpe = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -304,7 +304,7 @@ class Audio2ContentVec768L12():
         self.device = device
         print(' [Encoder Model] Content Vec')
         print(' [Loading] ' + path)
-        self.models, self.saved_cfg, self.task = checkpoint_utils.load_model_ensemble_and_task([path], suffix="", )
+        self.models, self.saved_cfg, self.task = checkpoint_utils.load_model_ensemble_and_task([path], suffix="")
         self.hubert = self.models[0]
         self.hubert = self.hubert.to(self.device)
         self.hubert.eval()

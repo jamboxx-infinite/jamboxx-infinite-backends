@@ -23,19 +23,19 @@ app = FastAPI()
 
 class DDSPService:
     def __init__(self, model_path=None, device=None):
-        # 初始化服务
+        # Initialize service
         if device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
             self.device = device
             
-        # 设置默认模型路径
+        # Set default model path
         if model_path is None:
-            # 使用os.path.join确保跨平台兼容性
+            # Use os.path.join for cross-platform compatibility
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            model_path = os.path.join(base_dir, 'app', 'models', 'ddsp', 'Neuro_22000.pt')
+            model_path = os.path.join(base_dir,'pretrain', 'ddsp', 'Neuro_22000.pt')
             
-        # 确保模型文件存在
+        # Ensure model file exists
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
             
@@ -43,15 +43,31 @@ class DDSPService:
         self.model, self.args = load_model(model_path, device=self.device)
         logger.info("Model loaded successfully")
         
-        # 缓存目录
+        # Cache directory
         self.cache_dir_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache")
         os.makedirs(self.cache_dir_path, exist_ok=True)
+
+        # Set contentvec model path
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        self.contentvec_path = os.path.join(
+            self.base_dir,
+            'pretrain',
+            'contentvec',
+            'checkpoint_best_legacy_500.pt'
+        )
+        
+        # Check contentvec model file
+        if not os.path.exists(self.contentvec_path):
+            raise FileNotFoundError(
+                f"ContentVec model not found at: {self.contentvec_path}\n"
+                "Please download the model file from the official repository "
+                "and place it in the correct directory."
+        )
     
     def infer(self, 
               input_path,
               output_path,
               spk_id=1,
-              spk_mix_dict=None,
               key=0,
               enhance=True,
               pitch_extractor='rmvpe',
@@ -59,32 +75,50 @@ class DDSPService:
               f0_max=1100,
               threhold=-60,
               enhancer_adaptive_key=0):
-        """执行DDSP推理转换"""
+        """
+        Perform DDSP inference conversion - Improved version
+        Replace the input pure vocal audio with the selected model's voice
         
-        # 加载输入音频
+        Parameters:
+            input_path: Input audio file path
+            output_path: Output audio file path
+            spk_id: Target speaker ID
+            key: Pitch adjustment parameter (semitones)
+            enhance: Whether to use audio enhancement
+            pitch_extractor: Pitch extraction algorithm
+            f0_min: Minimum pitch (Hz)
+            f0_max: Maximum pitch (Hz)
+            threhold: Volume threshold (dB)
+            enhancer_adaptive_key: Enhancer adaptive key value
+        """
+        import os
+        import tempfile
+        import uuid
+        
+        # Load input audio
         audio, sample_rate = librosa.load(input_path, sr=None)
         if len(audio.shape) > 1:
             audio = librosa.to_mono(audio)
         hop_size = self.args.data.block_size * sample_rate / self.args.data.sampling_rate
         
-        # 获取MD5哈希用于缓存
+        # Get MD5 hash for cache
         md5_hash = ""
         with open(input_path, 'rb') as f:
             data = f.read()
             md5_hash = hashlib.md5(data).hexdigest()
         
-        # 检查并加载/提取音高曲线
+        # Check and load/extract pitch curves
         cache_file_path = os.path.join(
             self.cache_dir_path, 
             f"{pitch_extractor}_{hop_size}_{f0_min}_{f0_max}_{md5_hash}.npy"
         )
         
         if os.path.exists(cache_file_path):
-            # 从缓存加载f0
+            # Load f0 from cache
             print('Loading pitch curves from cache...')
             f0 = np.load(cache_file_path, allow_pickle=False)
         else:
-            # 提取f0
+            # Extract f0
             print(f'Extracting pitch using {pitch_extractor}...')
             pitch_extractor_obj = F0_Extractor(
                 pitch_extractor, 
@@ -95,15 +129,15 @@ class DDSPService:
             )
             f0 = pitch_extractor_obj.extract(audio, uv_interp=True, device=self.device)
             
-            # 保存f0缓存
+            # Save f0 cache
             np.save(cache_file_path, f0, allow_pickle=False)
         
         f0 = torch.from_numpy(f0).float().to(self.device).unsqueeze(-1).unsqueeze(0)
         
-        # 变调
+        # Pitch adjustment
         f0 = f0 * 2 ** (float(key) / 12)
         
-        # 提取音量包络
+        # Extract volume envelope
         print('Extracting volume envelope...')
         volume_extractor = Volume_Extractor(hop_size)
         volume = volume_extractor.extract(audio)
@@ -114,7 +148,7 @@ class DDSPService:
         mask = upsample(mask, self.args.data.block_size).squeeze(-1)
         volume = torch.from_numpy(volume).float().to(self.device).unsqueeze(-1).unsqueeze(0)
         
-        # 加载单元编码器
+        # Load unit encoder
         if self.args.data.encoder == 'cnhubertsoftfish':
             cnhubertsoft_gate = self.args.data.cnhubertsoft_gate
         else:
@@ -126,97 +160,264 @@ class DDSPService:
             self.args.data.encoder_sample_rate, 
             self.args.data.encoder_hop_size,
             cnhubertsoft_gate=cnhubertsoft_gate,
-            device=self.device
+            device=self.device,
         )
         
-        # 加载增强器
+        # Load enhancer
         enhancer = None
         if enhance:
             print(f'Using enhancer: {self.args.enhancer.type}')
             enhancer = Enhancer(self.args.enhancer.type, self.args.enhancer.ckpt, device=self.device)
         
-        # 处理说话人ID或混合字典
-        if spk_mix_dict is not None:
-            print('Using mix-speaker mode')
-        else:
-            print(f'Using speaker ID: {spk_id}')
-            
+        # Process speaker ID
+        print(f'Using speaker ID: {spk_id}')
         spk_id_tensor = torch.LongTensor(np.array([[int(spk_id)]])).to(self.device)
         
-        # 执行推理
-        result = np.zeros(0)
-        current_length = 0
-        segments = self._split_audio(audio, sample_rate, hop_size, db_thresh=threhold)
-        print(f'Processing {len(segments)} audio segments...')
-        
-        with torch.no_grad():
-            for segment in tqdm(segments):
-                start_frame = segment[0]
-                seg_input = torch.from_numpy(segment[1]).float().unsqueeze(0).to(self.device)
-                seg_units = units_encoder.encode(seg_input, sample_rate, hop_size)
+        try:
+            # Process input audio directly
+            audio_t = torch.tensor(audio).float().unsqueeze(0).to(self.device)
+            
+            # Extract features
+            units = units_encoder.encode(audio_t, sample_rate, hop_size)
+            
+            # Process long audio in segments (if needed)
+            if units.size(1) > 800:  # If audio is too long, process in segments
+                # Pre-estimate result length, allocate enough space
+                estimated_length = int(units.size(1) * self.args.data.block_size * sample_rate / self.args.data.sampling_rate)
+                result_segments = []  # Store processed segments
+                segment_positions = []  # Store segment start positions in final result
                 
-                seg_f0 = f0[:, start_frame : start_frame + seg_units.size(1), :]
-                seg_volume = volume[:, start_frame : start_frame + seg_units.size(1), :]
+                # Split audio
+                segment_length = 500  # 500 frames per segment
+                overlap = 50  # 50 frames overlap
                 
-                seg_output, _, (s_h, s_n) = self.model(
-                    seg_units, 
-                    seg_f0, 
-                    seg_volume, 
-                    spk_id=spk_id_tensor, 
-                    spk_mix_dict=spk_mix_dict
+                for start_idx in range(0, units.size(1), segment_length - overlap):
+                    end_idx = min(start_idx + segment_length, units.size(1))
+                    print(f"Processing segment {start_idx/units.size(1)*100:.1f}% - [{start_idx}:{end_idx}]/{units.size(1)}")
+                    
+                    # Extract features for current segment
+                    segment_units = units[:, start_idx:end_idx]
+                    segment_f0 = f0[:, start_idx:end_idx]
+                    segment_volume = volume[:, start_idx:end_idx]
+                    
+                    # Perform model inference
+                    with torch.no_grad():
+                        segment_output, _, _ = self.model(
+                            segment_units,
+                            segment_f0,
+                            segment_volume,
+                            spk_id=spk_id_tensor
+                        )
+                        
+                        # Apply volume mask
+                        segment_mask = mask[:, start_idx * self.args.data.block_size:(end_idx) * self.args.data.block_size]
+                        if segment_mask.size(1) < segment_output.size(1):
+                            segment_mask = torch.cat([segment_mask, segment_mask[:, -1:].repeat(1, segment_output.size(1) - segment_mask.size(1))], dim=1)
+                        segment_output = segment_output * segment_mask[:, :segment_output.size(1)]
+                        
+                        # Apply enhancement
+                        if enhance and enhancer:
+                            segment_output, output_sample_rate = enhancer.enhance(
+                                segment_output,
+                                self.args.data.sampling_rate,
+                                segment_f0,
+                                self.args.data.block_size,
+                                adaptive_key=enhancer_adaptive_key
+                            )
+                        else:
+                            output_sample_rate = self.args.data.sampling_rate
+                        
+                        segment_output = segment_output.squeeze().cpu().numpy()
+                    
+                    # Save processed segment and position
+                    result_segments.append(segment_output)
+                    segment_positions.append(start_idx)
+                
+                # Merge all segments using improved method
+                result = self._merge_segments(
+                    result_segments, 
+                    segment_positions, 
+                    segment_length, 
+                    overlap, 
+                    self.args.data.block_size, 
+                    output_sample_rate, 
+                    self.args.data.sampling_rate
                 )
-                seg_output *= mask[:, start_frame * self.args.data.block_size : 
-                                  (start_frame + seg_units.size(1)) * self.args.data.block_size]
                 
-                if enhance and enhancer:
-                    seg_output, output_sample_rate = enhancer.enhance(
-                        seg_output, 
-                        self.args.data.sampling_rate, 
-                        seg_f0, 
-                        self.args.data.block_size, 
-                        adaptive_key=enhancer_adaptive_key
+            else:
+                # Process shorter audio directly
+                with torch.no_grad():
+                    output, _, _ = self.model(
+                        units,
+                        f0,
+                        volume,
+                        spk_id=spk_id_tensor
                     )
-                else:
-                    output_sample_rate = self.args.data.sampling_rate
-                
-                seg_output = seg_output.squeeze().cpu().numpy()
-                
-                # 处理静音部分和拼接
-                silent_length = round(start_frame * self.args.data.block_size * 
-                                     output_sample_rate / self.args.data.sampling_rate) - current_length
-                if silent_length >= 0:
-                    result = np.append(result, np.zeros(silent_length))
-                    result = np.append(result, seg_output)
-                else:
-                    result = self._cross_fade(result, seg_output, current_length + silent_length)
-                current_length = current_length + silent_length + len(seg_output)
+                    
+                    # Apply volume mask
+                    output = output * mask[:, :output.size(1)]
+                    
+                    # Apply enhancement
+                    if enhance and enhancer:
+                        output, output_sample_rate = enhancer.enhance(
+                            output,
+                            self.args.data.sampling_rate,
+                            f0,
+                            self.args.data.block_size,
+                            adaptive_key=enhancer_adaptive_key
+                        )
+                    else:
+                        output_sample_rate = self.args.data.sampling_rate
+                    
+                    result = output.squeeze().cpu().numpy()
         
-        # 保存输出音频
+        except Exception as e:
+            print(f"Error during voice conversion: {str(e)}")
+            raise
+        
+        # Save output audio
         sf.write(output_path, result, output_sample_rate)
         print(f"Output saved to {output_path}")
         return output_path
 
+    def _merge_segments(self, segments, positions, segment_length, overlap, block_size, output_sample_rate, input_sample_rate):
+        """
+        Improved segment merging method
+        
+        Parameters:
+            segments: List of processed audio segments
+            positions: Start positions of each segment
+            segment_length: Length of each segment (frames)
+            overlap: Overlap length (frames)
+            block_size: Block size
+            output_sample_rate: Output sample rate
+            input_sample_rate: Input sample rate
+        Returns:
+            Merged complete audio
+        """
+        if len(segments) == 0:
+            return np.array([])
+        
+        if len(segments) == 1:
+            return segments[0]
+        
+        # Calculate overlap samples after conversion
+        overlap_samples = int(overlap * block_size * output_sample_rate / input_sample_rate)
+        
+        # Estimate final output length
+        last_pos = positions[-1]
+        last_segment = segments[-1]
+        total_length = int((last_pos + segment_length) * block_size * output_sample_rate / input_sample_rate)
+        
+        # Create output array of sufficient size
+        merged = np.zeros(total_length, dtype=np.float32)
+        weights = np.zeros(total_length, dtype=np.float32)
+        
+        # Iterate and merge all segments
+        for i, (segment, pos) in enumerate(zip(segments, positions)):
+            # Calculate start and end positions of current segment in output
+            start_sample = int(pos * block_size * output_sample_rate / input_sample_rate)
+            end_sample = start_sample + len(segment)
+            
+            # Ensure we don't exceed boundaries
+            if end_sample > len(merged):
+                end_sample = len(merged)
+                segment = segment[:end_sample - start_sample]
+            
+            # Create weights - fade in/out at edges, weight=1 in middle
+            weight = np.ones(len(segment))
+            
+            # If not the first segment, fade in at beginning
+            if i > 0 and overlap_samples > 0:
+                fade_in_length = min(overlap_samples, len(weight))
+                weight[:fade_in_length] = np.linspace(0, 1, fade_in_length)
+            
+            # If not the last segment, fade out at end
+            if i < len(segments) - 1 and overlap_samples > 0:
+                fade_out_length = min(overlap_samples, len(weight))
+                weight[-fade_out_length:] = np.linspace(1, 0, fade_out_length)
+            
+            # Add weighted segment to result
+            current_range = slice(start_sample, start_sample + len(segment))
+            merged[current_range] += segment * weight
+            weights[current_range] += weight
+        
+        # Avoid division by zero
+        valid_indices = weights > 0
+        merged[valid_indices] /= weights[valid_indices]
+        
+        return merged
+
+    def _cross_fade(self, y1, y2, length):
+        """
+        Cross-fade between two audio segments
+        
+        Parameters:
+            y1: First audio segment
+            y2: Second audio segment
+            length: Overlap position
+            
+        Returns:
+            Mixed audio
+        """
+        if length < 1:
+            return np.append(y1, y2)
+        
+        # Ensure length doesn't exceed y1 or y2 length
+        length = min(length, len(y1), len(y2))
+        
+        # Create linear fade in/out curves, ensure length match
+        fade_out = np.linspace(1, 0, length)
+        fade_in = np.linspace(0, 1, length)
+        
+        # Apply cross-fade
+        y1_end = y1[-length:]
+        y2_start = y2[:length]
+        
+        # Output debug information
+        print(f"Cross-fade - y1_end shape: {y1_end.shape}, y2_start shape: {y2_start.shape}, fade curves length: {len(fade_in)}")
+        
+        # Ensure all arrays have matching lengths
+        min_len = min(len(y1_end), len(y2_start), len(fade_in))
+        if min_len < length:
+            print(f"Warning: Adjusting fade length from {length} to {min_len}")
+            length = min_len
+            fade_out = np.linspace(1, 0, length)
+            fade_in = np.linspace(0, 1, length)
+            y1_end = y1[-length:]
+            y2_start = y2[:length]
+        
+        # Apply fades
+        y1[-length:] = y1_end * fade_out
+        y2_first = y2_start * fade_in
+        
+        # Merge results
+        result = np.append(y1[:-length], y1[-length:] + y2_first)
+        result = np.append(result, y2[length:])
+        
+        return result
+
     def get_speakers(self) -> List[Dict[str, any]]:
         """
-        获取当前模型支持的说话人列表
+        Get the list of speakers supported by the current model
         
         Returns:
-            List[Dict]: 说话人列表，每个说话人包含id和name
+            List[Dict]: Speaker list, each speaker contains id and name
             
         Raises:
-            RuntimeError: 当模型未加载时
-            ValueError: 当无法获取说话人信息时
+            RuntimeError: When no model is loaded
+            ValueError: When speaker information cannot be obtained
         """
         try:
-            # 检查模型是否已加载
+            # Check if model is loaded
             if self.model is None:
                 raise RuntimeError("No model loaded. Please load a model first.")
                 
-            # 如果缓存存在且模型未改变，直接返回缓存
+            # If cache exists and model hasn't changed, return from cache
             if self._speakers_cache is not None and self.model is not None:
                 return self._speakers_cache
                 
-            # 从模型配置中获取说话人信息
+            # Get speaker information from model config
             if not hasattr(self.args.data, 'speakers'):
                 raise ValueError("No speakers information found in model configuration")
                 
@@ -229,7 +430,7 @@ class DDSPService:
                     "is_active": True
                 })
             
-            # 更新缓存
+            # Update cache
             self._speakers_cache = speakers_info
             return speakers_info
             
