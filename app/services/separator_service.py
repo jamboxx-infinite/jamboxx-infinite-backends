@@ -10,6 +10,8 @@ import logging
 import numpy as np
 import soundfile as sf
 from typing import Tuple, Optional
+import tempfile
+import uuid
 
 class AudioSeparatorService:
     def __init__(self, model_name="htdemucs"):
@@ -110,3 +112,77 @@ class AudioSeparatorService:
         except Exception as e:
             self.logger.error(f"Separation error: {str(e)}", exc_info=True)
             raise RuntimeError(f"Audio separation failed: {str(e)}")
+
+    async def merge_tracks(self, vocals_path: str, instruments_path: str, output_path: Optional[str] = None, 
+                           vocals_volume: float = 1.5, instruments_volume: float = 1.0) -> str:
+        """
+        Merge vocals and instruments tracks into a single audio file
+        
+        Args:
+            vocals_path: Path to the vocals audio file
+            instruments_path: Path to the instruments audio file
+            output_path: Optional path for the output file. If None, a temporary file will be created
+            vocals_volume: Volume multiplier for vocals track (default: 1.5)
+            instruments_volume: Volume multiplier for instruments track (default: 1.0)
+            
+        Returns:
+            str: Path to the merged audio file
+            
+        Raises:
+            RuntimeError: When merging fails
+        """
+        try:
+            self.logger.info(f"Merging vocals from {vocals_path} and instruments from {instruments_path}")
+            self.logger.info(f"Vocals volume: {vocals_volume}, Instruments volume: {instruments_volume}")
+            
+            # Validate input files
+            if not os.path.exists(vocals_path):
+                raise FileNotFoundError(f"Vocals file not found: {vocals_path}")
+            if not os.path.exists(instruments_path):
+                raise FileNotFoundError(f"Instruments file not found: {instruments_path}")
+            
+            # Create output path if not provided
+            if output_path is None:
+                output_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+                
+            # Get audio information to ensure compatibility
+            vocals_info = sf.info(vocals_path)
+            instruments_info = sf.info(instruments_path)
+            
+            self.logger.info(f"Vocals: {vocals_info.samplerate}Hz, {vocals_info.channels} channels, {vocals_info.frames} frames")
+            self.logger.info(f"Instruments: {instruments_info.samplerate}Hz, {instruments_info.channels} channels, {instruments_info.frames} frames")
+            
+            # Ensure the sample rates match
+            target_sr = max(vocals_info.samplerate, instruments_info.samplerate)
+            
+            # Use FFmpeg to mix the audio files with custom volume levels
+            # The filter_complex command applies volume adjustments before mixing
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", vocals_path,
+                "-i", instruments_path,
+                "-filter_complex", 
+                f"[0:a]volume={vocals_volume}[v];[1:a]volume={instruments_volume}[i];[v][i]amix=inputs=2:duration=longest:dropout_transition=2:normalize=0",
+                "-ar", str(target_sr),
+                "-ac", "2",  # Output in stereo
+                "-b:a", "192k",  # High quality bitrate
+                output_path
+            ]
+            
+            self.logger.info(f"Executing FFmpeg command: {' '.join(cmd)}")
+            
+            # Execute the command
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg mixing failed: {result.stderr}")
+                
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError("Merged file was not created or is empty")
+                
+            self.logger.info(f"Successfully merged tracks to {output_path}")
+            return output_path
+            
+        except Exception as e:
+            self.logger.error(f"Error merging tracks: {str(e)}", exc_info=True)
+            raise RuntimeError(f"Failed to merge audio tracks: {str(e)}")

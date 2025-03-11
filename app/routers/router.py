@@ -7,6 +7,8 @@ import numpy as np
 import soundfile as sf
 from pydantic import BaseModel
 import tempfile
+import aiofiles  # 添加这行
+import io  # 添加这行
 from app.services.ddsp_service import DDSPService
 from ..services.separator_service import AudioSeparatorService
 import logging
@@ -123,14 +125,17 @@ async def convert_voice(
         if len(file_content) > 0:
             # Save to new location using relative path
             static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-            os.makedirs(static_dir, exist_ok=True)
-            final_output_path = os.path.join(static_dir, f"output_{uuid.uuid4()}.wav")
+            # Create subdirectory for this endpoint
+            convert_dir = os.path.join(static_dir, "convert")
+            os.makedirs(convert_dir, exist_ok=True)
+            
+            final_output_path = os.path.join(convert_dir, f"output_{uuid.uuid4()}.wav")
             
             with open(final_output_path, 'wb') as f:
                 f.write(file_content)
                 
             # Build URL path
-            url_path = f"/static/{os.path.basename(final_output_path)}"
+            url_path = f"/static/convert/{os.path.basename(final_output_path)}"
             
             # Return file URL instead of direct file
             return JSONResponse({
@@ -277,16 +282,39 @@ async def separate_audio(audio_file: UploadFile = File(...)):
         
         logger.info(f"After processing - Vocals shape: {vocals.shape}, range: [{vocals.min()}, {vocals.max()}]")
         
-        # Save processed audio
+        # Save processed audio to temp files
         sf.write(vocals_path, vocals, sr)
         sf.write(instruments_path, instruments, sr)
         
         logger.info("Audio separation completed successfully")
         
-        # Return file paths may cause cleanup issues, return file content directly
+        # Save to static directory under separator subfolder
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        separator_dir = os.path.join(static_dir, "separator")
+        os.makedirs(separator_dir, exist_ok=True)
+        
+        # Copy files to static directory
+        static_vocals_path = os.path.join(separator_dir, f"vocals_{uuid.uuid4()}.wav")
+        static_instruments_path = os.path.join(separator_dir, f"instruments_{uuid.uuid4()}.wav")
+        
+        with open(vocals_path, 'rb') as f_in:
+            with open(static_vocals_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+                
+        with open(instruments_path, 'rb') as f_in:
+            with open(static_instruments_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+        
+        # Build URL paths
+        vocals_url = f"/static/separator/{os.path.basename(static_vocals_path)}"
+        instruments_url = f"/static/separator/{os.path.basename(static_instruments_path)}"
+        
+        # Return paths to the static files
         return {
             "vocals_path": vocals_path,
             "instruments_path": instruments_path,
+            "vocals_url": vocals_url,
+            "instruments_url": instruments_url,
             "sample_rate": sr
         }
         
@@ -312,5 +340,446 @@ def _cleanup_temp_files(file_paths):
         if path and os.path.exists(path):
             try:
                 os.unlink(path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {path}: {str(e)}")
+
+@router.post("/audio/merge")
+async def merge_audio_tracks(
+    vocals_path: str = Form(...),
+    instruments_path: str = Form(...),
+    vocals_volume: float = Form(1.5),
+    instruments_volume: float = Form(1.0),
+    output_filename: Optional[str] = Form(None)
+):
+    """
+    Merge vocals and instruments tracks into a single audio file
+    
+    Args:
+        vocals_path: Path to the vocals audio file
+        instruments_path: Path to the instruments audio file
+        vocals_volume: Volume multiplier for vocals track (default: 1.5)
+        instruments_volume: Volume multiplier for instruments track (default: 1.0)
+        output_filename: Optional custom filename for the output file
+        
+    Returns:
+        JSON with the merged file URL and information
+    """
+    try:
+        # Validate input paths
+        if not os.path.exists(vocals_path):
+            raise HTTPException(status_code=400, detail=f"Vocals file not found: {vocals_path}")
+        if not os.path.exists(instruments_path):
+            raise HTTPException(status_code=400, detail=f"Instruments file not found: {instruments_path}")
+            
+        logger.info(f"Merging audio tracks - Vocals: {vocals_path}, Instruments: {instruments_path}")
+        
+        # Create output path in temp directory
+        output_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        
+        # Call the merge_tracks function with volume parameters
+        merged_path = await separator_service.merge_tracks(
+            vocals_path=vocals_path,
+            instruments_path=instruments_path,
+            output_path=output_path,
+            vocals_volume=vocals_volume,
+            instruments_volume=instruments_volume
+        )
+        
+        # Verify the merged file exists
+        if not os.path.exists(merged_path):
+            raise HTTPException(status_code=500, detail="Merged file was not created")
+            
+        logger.info(f"Audio tracks merged successfully to {merged_path}")
+        
+        # Read file content
+        with open(merged_path, 'rb') as f:
+            file_content = f.read()
+            
+        # Create final output path in static directory for serving
+        filename = output_filename or f"merged_{uuid.uuid4()}.wav"
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        merge_dir = os.path.join(static_dir, "merge")
+        os.makedirs(merge_dir, exist_ok=True)
+        
+        final_output_path = os.path.join(merge_dir, filename)
+        
+        # Save content to static directory
+        with open(final_output_path, 'wb') as f:
+            f.write(file_content)
+            
+        # Build URL path
+        url_path = f"/static/merge/{os.path.basename(final_output_path)}"
+        
+        # Clean up the temporary file
+        try:
+            os.unlink(merged_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary merged file: {str(e)}")
+            
+        # Return response with file URL and information
+        return JSONResponse({
+            "status": "success",
+            "message": "Audio tracks merged successfully",
+            "file_url": url_path,
+            "file_size": len(file_content)
+        })
+        
+    except Exception as e:
+        logger.error(f"Audio merging failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Also add a more convenient endpoint that handles file uploads directly
+@router.post("/audio/merge-uploads")
+async def merge_uploaded_audio(
+    vocals_file: UploadFile = File(...),
+    instruments_file: UploadFile = File(...),
+    vocals_volume: float = Form(1.5),
+    instruments_volume: float = Form(1.0)
+):
+    """
+    Merge uploaded vocals and instruments audio files
+    
+    Args:
+        vocals_file: Uploaded vocals audio file
+        instruments_file: Uploaded instruments audio file
+        vocals_volume: Volume multiplier for vocals track (default: 1.5)
+        instruments_volume: Volume multiplier for instruments track (default: 1.0)
+        
+    Returns:
+        JSON with the merged file URL and information
+    """
+    temp_files = []
+    
+    try:
+        # Create temporary files for uploads
+        vocals_path = f"{tempfile.gettempdir()}/vocals_{uuid.uuid4()}.wav"
+        instruments_path = f"{tempfile.gettempdir()}/instruments_{uuid.uuid4()}.wav"
+        temp_files.extend([vocals_path, instruments_path])
+        
+        # Save uploaded files
+        await vocals_file.seek(0)
+        vocals_content = await vocals_file.read()
+        with open(vocals_path, "wb") as f:
+            f.write(vocals_content)
+            
+        await instruments_file.seek(0)
+        instruments_content = await instruments_file.read()
+        with open(instruments_path, "wb") as f:
+            f.write(instruments_content)
+            
+        logger.info(f"Uploaded files saved to: {vocals_path}, {instruments_path}")
+        
+        # Create output path
+        output_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        temp_files.append(output_path)
+        
+        # Merge the tracks with volume parameters
+        merged_path = await separator_service.merge_tracks(
+            vocals_path=vocals_path,
+            instruments_path=instruments_path,
+            output_path=output_path,
+            vocals_volume=vocals_volume,
+            instruments_volume=instruments_volume
+        )
+        
+        # Read the merged file
+        with open(merged_path, 'rb') as f:
+            file_content = f.read()
+            
+        # Save to static directory for serving
+        filename = f"merged_{uuid.uuid4()}.wav"
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        merge_uploads_dir = os.path.join(static_dir, "merge-uploads")
+        os.makedirs(merge_uploads_dir, exist_ok=True)
+        final_output_path = os.path.join(merge_uploads_dir, filename)
+        
+        with open(final_output_path, 'wb') as f:
+            f.write(file_content)
+            
+        # Build URL path
+        url_path = f"/static/merge-uploads/{os.path.basename(final_output_path)}"
+        
+        return JSONResponse({
+            "status": "success",
+            "message": "Audio tracks merged successfully",
+            "file_url": url_path,
+            "file_size": len(file_content),
+            "content_type": "audio/wav"
+        })
+        
+    except Exception as e:
+        logger.error(f"Audio merging failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    finally:
+        # Clean up temporary files
+        for path in temp_files:
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp file {path}: {str(e)}")
+
+@router.post("/audio/process-all")
+async def process_audio_pipeline(
+    file: UploadFile = File(...),
+    speaker_id: int = Form(1),
+    key: int = Form(0),
+    enhance: bool = Form(True),
+    pitch_extractor: str = Form("rmvpe"),
+    f0_min: int = Form(50),
+    f0_max: int = Form(1100),
+    threhold: int = Form(-60),
+    enhancer_adaptive_key: int = Form(0),
+    vocals_volume: float = Form(1.5),
+    instruments_volume: float = Form(1.0)
+):
+    """
+    Complete audio processing pipeline: separate -> convert -> merge
+    
+    This endpoint processes an audio file through the following steps:
+    1. Separates vocals and instruments from the input audio
+    2. Converts the vocals using the selected voice model
+    3. Merges the converted vocals with the original instruments
+    
+    Args:
+        file: Input audio file
+        speaker_id: Target speaker ID for voice conversion
+        key: Pitch adjustment parameter (semitones)
+        enhance: Whether to use audio enhancement
+        pitch_extractor: Pitch extraction algorithm
+        f0_min: Minimum pitch (Hz)
+        f0_max: Maximum pitch (Hz)
+        threhold: Volume threshold (dB)
+        enhancer_adaptive_key: Enhancer adaptive key value
+        vocals_volume: Volume multiplier for vocals (default: 1.5)
+        instruments_volume: Volume multiplier for instruments (default: 1.0)
+    
+    Returns:
+        JSON with URLs to all generated files and processing information
+    """
+    temp_files = []
+    pipeline_steps = {}
+    
+    try:
+        logger.info("Starting audio processing pipeline")
+        
+        # Create input temp file
+        input_path = f"{tempfile.gettempdir()}/pipeline_input_{uuid.uuid4()}.wav"
+        temp_files.append(input_path)
+        
+        # Save uploaded file
+        content = await file.read()
+        with open(input_path, "wb") as f:
+            f.write(content)
+            
+        logger.info(f"Original audio saved to {input_path}")
+        pipeline_steps["input"] = input_path
+        
+        # Step 1: Separate audio tracks
+        logger.info("Step 1: Separating audio tracks")
+        
+        # 不要创建新的 UploadFile 对象，而是使用分离服务直接处理文件
+        vocals_path = f"{tempfile.gettempdir()}/vocals_{uuid.uuid4()}.wav"
+        instruments_path = f"{tempfile.gettempdir()}/instruments_{uuid.uuid4()}.wav"
+        temp_files.extend([vocals_path, instruments_path])
+
+        # 直接使用 separator_service 处理输入文件
+        vocals, instruments, sr = await separator_service.separate_tracks(input_path)
+
+        # 处理并保存分离的音频
+        # 确保数据格式正确
+        if vocals.ndim == 3:  # 如果 [batch, channels, samples]
+            vocals = vocals[0].T  # 转换为 [samples, channels]
+            instruments = instruments[0].T
+        elif vocals.ndim == 2 and vocals.shape[0] <= 2:  # 如果 [channels, samples]
+            vocals = vocals.T     # 转换为 [samples, channels]
+            instruments = instruments.T
+
+        # 确保正确的数据类型
+        if not isinstance(vocals, np.ndarray):
+            vocals = vocals.numpy() if hasattr(vocals, 'numpy') else np.array(vocals)
+        if not isinstance(instruments, np.ndarray):
+            instruments = instruments.numpy() if hasattr(instruments, 'numpy') else np.array(instruments)
+
+        # 转换为 float32 兼容性
+        vocals = vocals.astype(np.float32)
+        instruments = instruments.astype(np.float32)
+
+        # 检查无效值
+        if np.isnan(vocals).any() or np.isinf(vocals).any():
+            logger.warning("Found NaN or Inf in vocals, replacing with zeros")
+            vocals = np.nan_to_num(vocals)
+        if np.isnan(instruments).any() or np.isinf(instruments).any():
+            logger.warning("Found NaN or Inf in instruments, replacing with zeros")
+            instruments = np.nan_to_num(instruments)
+
+        # 归一化音频范围到 [-1, 1]
+        max_val = max(np.abs(vocals).max(), np.abs(instruments).max())
+        if max_val > 1.0:
+            vocals /= max_val
+            instruments /= max_val
+
+        # 保存分离后的音频到临时文件
+        sf.write(vocals_path, vocals, sr)
+        sf.write(instruments_path, instruments, sr)
+
+        # 保存到静态目录
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        separator_dir = os.path.join(static_dir, "separator")
+        os.makedirs(separator_dir, exist_ok=True)
+
+        static_vocals_path = os.path.join(separator_dir, f"vocals_{uuid.uuid4()}.wav")
+        static_instruments_path = os.path.join(separator_dir, f"instruments_{uuid.uuid4()}.wav")
+
+        with open(vocals_path, 'rb') as f_in:
+            with open(static_vocals_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        with open(instruments_path, 'rb') as f_in:
+            with open(static_instruments_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        vocals_url = f"/static/separator/{os.path.basename(static_vocals_path)}"
+        instruments_url = f"/static/separator/{os.path.basename(static_instruments_path)}"
+
+        pipeline_steps["separation"] = {
+            "vocals_url": vocals_url,
+            "instruments_url": instruments_url
+        }
+        
+        # Step 2: Convert vocals
+        logger.info("Step 2: Converting vocals")
+        
+        # 直接调用 ddsp_service.infer 而不是 convert_voice 端点
+        converted_vocals_path = f"{tempfile.gettempdir()}/converted_{uuid.uuid4()}.wav"
+        temp_files.append(converted_vocals_path)
+
+        result_path = ddsp_service.infer(
+            input_path=vocals_path,
+            output_path=converted_vocals_path,
+            spk_id=speaker_id,
+            key=key,
+            enhance=enhance,
+            pitch_extractor=pitch_extractor,
+            f0_min=f0_min,
+            f0_max=f0_max,
+            threhold=threhold,
+            enhancer_adaptive_key=enhancer_adaptive_key
+        )
+
+        # 保存到静态目录
+        convert_dir = os.path.join(static_dir, "converter")
+        os.makedirs(convert_dir, exist_ok=True)
+
+        static_converted_path = os.path.join(convert_dir, f"converted_{uuid.uuid4()}.wav")
+
+        with open(result_path, 'rb') as f_in:
+            with open(static_converted_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        converted_vocals_url = f"/static/converter/{os.path.basename(static_converted_path)}"
+
+        pipeline_steps["conversion"] = {
+            "vocals_url": converted_vocals_url
+        }
+        
+        # Step 3: Merge converted vocals with original instruments
+        logger.info("Step 3: Merging converted vocals with original instruments")
+
+        # 直接使用 separator_service 而不是调用端点
+        merged_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        temp_files.append(merged_path)
+
+        merged_result = await separator_service.merge_tracks(
+            vocals_path=converted_vocals_path,
+            instruments_path=instruments_path,
+            output_path=merged_path,
+            vocals_volume=vocals_volume,
+            instruments_volume=instruments_volume
+        )
+
+        # 保存到静态目录
+        merge_dir = os.path.join(static_dir, "merge")
+        os.makedirs(merge_dir, exist_ok=True)
+        final_merged_filename = f"merged_{uuid.uuid4()}.wav"
+        static_merged_path = os.path.join(merge_dir, final_merged_filename)
+
+        # 复制文件到静态目录
+        with open(merged_result, 'rb') as f_in:
+            with open(static_merged_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # 构建 URL 路径
+        merged_url = f"/static/merge/{os.path.basename(static_merged_path)}"
+
+        pipeline_steps["merge"] = {
+            "file_url": merged_url
+        }
+        
+        # Save to static directory under the pipeline subfolder
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        pipeline_dir = os.path.join(static_dir, "pipeline")
+        os.makedirs(pipeline_dir, exist_ok=True)
+        
+        final_output_filename = f"processed_{uuid.uuid4()}.wav"
+        pipeline_output_path = os.path.join(pipeline_dir, final_output_filename)
+        
+        # Get path to merged file
+        source_path = os.path.join(static_dir, merged_url.lstrip('/static/'))
+        
+        # Copy the merged file to the pipeline directory
+        async with aiofiles.open(source_path, 'rb') as src_file:
+            content = await src_file.read()
+            async with aiofiles.open(pipeline_output_path, 'wb') as dst_file:
+                await dst_file.write(content)
+                
+        # Build URL path for the final output
+        final_url_path = f"/static/pipeline/{final_output_filename}"
+        
+        # Return all results
+        return JSONResponse({
+            "status": "success",
+            "message": "Audio processing pipeline completed successfully",
+            "original_audio": {
+                "filename": file.filename
+            },
+            "separated_audio": {
+                "vocals_url": vocals_url,
+                "instruments_url": instruments_url
+            },
+            "converted_audio": {
+                "vocals_url": converted_vocals_url
+            },
+            "final_output": {
+                "file_url": final_url_path,
+                "file_size": os.path.getsize(pipeline_output_path)
+            },
+            "processing_info": {
+                "speaker_id": speaker_id,
+                "key": key,
+                "enhance": enhance,
+                "vocals_volume": vocals_volume,
+                "instruments_volume": instruments_volume
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Audio processing pipeline failed: {str(e)}", exc_info=True)
+        error_response = {
+            "status": "error",
+            "message": str(e),
+            "completed_steps": pipeline_steps
+        }
+        raise HTTPException(status_code=500, detail=error_response)
+    
+    finally:
+        # Clean up all temp files
+        for path in temp_files:
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {path}: {str(e)}")

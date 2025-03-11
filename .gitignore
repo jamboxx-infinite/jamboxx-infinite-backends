@@ -32,3 +32,10 @@ env/
 
 # models
 *.pt
+
+# music
+*.wav
+*.mp3
+*.flac
+
+*.npy

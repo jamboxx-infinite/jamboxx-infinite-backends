@@ -29,11 +29,15 @@ class DDSPService:
         else:
             self.device = device
             
+        # set base directory
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        
+        os.environ['RMVPE_MODEL_PATH'] = os.path.join(self.base_dir, 'pretrain', 'rmvpe', 'model.pt')
+        
         # Set default model path
         if model_path is None:
             # Use os.path.join for cross-platform compatibility
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            model_path = os.path.join(base_dir,'pretrain', 'ddsp', 'Neuro_22000.pt')
+            model_path = os.path.join(self.base_dir,'pretrain', 'ddsp', 'Neuro_22000.pt')
             
         # Ensure model file exists
         if not os.path.exists(model_path):
