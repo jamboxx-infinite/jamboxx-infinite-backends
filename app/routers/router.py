@@ -314,3 +314,177 @@ def _cleanup_temp_files(file_paths):
                 os.unlink(path)
             except Exception as e:
                 logger.warning(f"Failed to delete temp file {path}: {str(e)}")
+
+@router.post("/audio/merge")
+async def merge_audio_tracks(
+    vocals_path: str = Form(...),
+    instruments_path: str = Form(...),
+    vocals_volume: float = Form(1.5),
+    instruments_volume: float = Form(1.0),
+    output_filename: Optional[str] = Form(None)
+):
+    """
+    Merge vocals and instruments tracks into a single audio file
+    
+    Args:
+        vocals_path: Path to the vocals audio file
+        instruments_path: Path to the instruments audio file
+        vocals_volume: Volume multiplier for vocals track (default: 1.5)
+        instruments_volume: Volume multiplier for instruments track (default: 1.0)
+        output_filename: Optional custom filename for the output file
+        
+    Returns:
+        JSON with the merged file URL and information
+    """
+    try:
+        # Validate input paths
+        if not os.path.exists(vocals_path):
+            raise HTTPException(status_code=400, detail=f"Vocals file not found: {vocals_path}")
+        if not os.path.exists(instruments_path):
+            raise HTTPException(status_code=400, detail=f"Instruments file not found: {instruments_path}")
+            
+        logger.info(f"Merging audio tracks - Vocals: {vocals_path}, Instruments: {instruments_path}")
+        
+        # Create output path in temp directory
+        output_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        
+        # Call the merge_tracks function with volume parameters
+        merged_path = await separator_service.merge_tracks(
+            vocals_path=vocals_path,
+            instruments_path=instruments_path,
+            output_path=output_path,
+            vocals_volume=vocals_volume,
+            instruments_volume=instruments_volume
+        )
+        
+        # Verify the merged file exists
+        if not os.path.exists(merged_path):
+            raise HTTPException(status_code=500, detail="Merged file was not created")
+            
+        logger.info(f"Audio tracks merged successfully to {merged_path}")
+        
+        # Read file content
+        with open(merged_path, 'rb') as f:
+            file_content = f.read()
+            
+        # Create final output path in static directory for serving
+        filename = output_filename or f"merged_{uuid.uuid4()}.wav"
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        final_output_path = os.path.join(static_dir, filename)
+        
+        # Save content to static directory
+        with open(final_output_path, 'wb') as f:
+            f.write(file_content)
+            
+        # Build URL path
+        url_path = f"/static/{os.path.basename(final_output_path)}"
+        
+        # Clean up the temporary file
+        try:
+            os.unlink(merged_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary merged file: {str(e)}")
+            
+        # Return response with file URL and information
+        return JSONResponse({
+            "status": "success",
+            "message": "Audio tracks merged successfully",
+            "file_url": url_path,
+            "file_size": len(file_content)
+        })
+        
+    except Exception as e:
+        logger.error(f"Audio merging failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Also add a more convenient endpoint that handles file uploads directly
+@router.post("/audio/merge-uploads")
+async def merge_uploaded_audio(
+    vocals_file: UploadFile = File(...),
+    instruments_file: UploadFile = File(...),
+    vocals_volume: float = Form(1.5),
+    instruments_volume: float = Form(1.0)
+):
+    """
+    Merge uploaded vocals and instruments audio files
+    
+    Args:
+        vocals_file: Uploaded vocals audio file
+        instruments_file: Uploaded instruments audio file
+        vocals_volume: Volume multiplier for vocals track (default: 1.5)
+        instruments_volume: Volume multiplier for instruments track (default: 1.0)
+        
+    Returns:
+        JSON with the merged file URL and information
+    """
+    temp_files = []
+    
+    try:
+        # Create temporary files for uploads
+        vocals_path = f"{tempfile.gettempdir()}/vocals_{uuid.uuid4()}.wav"
+        instruments_path = f"{tempfile.gettempdir()}/instruments_{uuid.uuid4()}.wav"
+        temp_files.extend([vocals_path, instruments_path])
+        
+        # Save uploaded files
+        await vocals_file.seek(0)
+        vocals_content = await vocals_file.read()
+        with open(vocals_path, "wb") as f:
+            f.write(vocals_content)
+            
+        await instruments_file.seek(0)
+        instruments_content = await instruments_file.read()
+        with open(instruments_path, "wb") as f:
+            f.write(instruments_content)
+            
+        logger.info(f"Uploaded files saved to: {vocals_path}, {instruments_path}")
+        
+        # Create output path
+        output_path = f"{tempfile.gettempdir()}/merged_{uuid.uuid4()}.wav"
+        temp_files.append(output_path)
+        
+        # Merge the tracks with volume parameters
+        merged_path = await separator_service.merge_tracks(
+            vocals_path=vocals_path,
+            instruments_path=instruments_path,
+            output_path=output_path,
+            vocals_volume=vocals_volume,
+            instruments_volume=instruments_volume
+        )
+        
+        # Read the merged file
+        with open(merged_path, 'rb') as f:
+            file_content = f.read()
+            
+        # Save to static directory for serving
+        filename = f"merged_{uuid.uuid4()}.wav"
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        os.makedirs(static_dir, exist_ok=True)
+        final_output_path = os.path.join(static_dir, filename)
+        
+        with open(final_output_path, 'wb') as f:
+            f.write(file_content)
+            
+        # Build URL path
+        url_path = f"/static/{os.path.basename(final_output_path)}"
+        
+        return JSONResponse({
+            "status": "success",
+            "message": "Audio tracks merged successfully",
+            "file_url": url_path,
+            "file_size": len(file_content),
+            "content_type": "audio/wav"
+        })
+        
+    except Exception as e:
+        logger.error(f"Audio merging failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    finally:
+        # Clean up temporary files
+        for path in temp_files:
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp file {path}: {str(e)}")
