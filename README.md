@@ -168,3 +168,6 @@ jamboxx_infinite_backends/
 - DDSP-SVC project
 - FastAPI framework
 - PyTorch community
+
+## Contributor
+WesleyXu - wesley.xu.23@ucl.ac.uk

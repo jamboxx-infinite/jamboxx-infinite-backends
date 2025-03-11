@@ -1,8 +1,11 @@
 import logging
 import subprocess
 from fastapi import FastAPI
-from app.routers import router
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import os
+from pathlib import Path
+from app.routers import router
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,23 @@ def verify_ffmpeg():
         logger.error(f"FFmpeg verification failed: {str(e)}")
         return False
 
-app = FastAPI(title="Jamboxx Backend API")
+app = FastAPI(title="Jamboxx Infinite Backends")
+
+# CORS设置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境中应该限制
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 创建静态文件目录
+static_dir = Path("d:/CS/System Engineering/Jamboxx_infinite_backends/static")
+os.makedirs(static_dir, exist_ok=True)
+
+# 挂载静态文件服务
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # 在应用启动时验证
 @app.on_event("startup")
@@ -46,6 +65,10 @@ app.include_router(router.router)
 def ping():
     """健康检查接口"""
     return {"status": "ok", "message": "pong"}
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to Jamboxx Infinite Backends"}
 
 if __name__ == "__main__":
     import uvicorn

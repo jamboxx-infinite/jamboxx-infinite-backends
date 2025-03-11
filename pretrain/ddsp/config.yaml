@@ -1,0 +1,44 @@
+data:
+  block_size: 512
+  cnhubertsoft_gate: 10
+  duration: 2
+  encoder: contentvec768l12
+  encoder_ckpt: pretrain/contentvec/checkpoint_best_legacy_500.pt
+  encoder_hop_size: 320
+  encoder_out_channels: 768
+  encoder_sample_rate: 16000
+  extensions:
+  - wav
+  f0_extractor: crepe
+  f0_max: 800
+  f0_min: 65
+  sampling_rate: 44100
+  train_path: data/train
+  valid_path: data/val
+device: cuda
+enhancer:
+  ckpt: pretrain/nsf_hifigan/model
+  type: nsf-hifigan
+env:
+  expdir: exp/combsub-test
+  gpu_id: 0
+loss:
+  fft_max: 2048
+  fft_min: 256
+  n_scale: 4
+model:
+  n_spk: 1
+  type: CombSubSuperFast
+  win_length: 2048
+train:
+  batch_size: 30
+  cache_all_data: 'True'
+  cache_device: cuda
+  cache_fp16: true
+  epochs: 100000
+  interval_log: 10
+  interval_val: 2000
+  lr: 0.0006
+  num_workers: 3
+  save_opt: false
+  weight_decay: 0
