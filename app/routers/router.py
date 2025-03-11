@@ -123,14 +123,17 @@ async def convert_voice(
         if len(file_content) > 0:
             # Save to new location using relative path
             static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-            os.makedirs(static_dir, exist_ok=True)
-            final_output_path = os.path.join(static_dir, f"output_{uuid.uuid4()}.wav")
+            # Create subdirectory for this endpoint
+            convert_dir = os.path.join(static_dir, "convert")
+            os.makedirs(convert_dir, exist_ok=True)
+            
+            final_output_path = os.path.join(convert_dir, f"output_{uuid.uuid4()}.wav")
             
             with open(final_output_path, 'wb') as f:
                 f.write(file_content)
                 
             # Build URL path
-            url_path = f"/static/{os.path.basename(final_output_path)}"
+            url_path = f"/static/convert/{os.path.basename(final_output_path)}"
             
             # Return file URL instead of direct file
             return JSONResponse({
@@ -277,16 +280,39 @@ async def separate_audio(audio_file: UploadFile = File(...)):
         
         logger.info(f"After processing - Vocals shape: {vocals.shape}, range: [{vocals.min()}, {vocals.max()}]")
         
-        # Save processed audio
+        # Save processed audio to temp files
         sf.write(vocals_path, vocals, sr)
         sf.write(instruments_path, instruments, sr)
         
         logger.info("Audio separation completed successfully")
         
-        # Return file paths may cause cleanup issues, return file content directly
+        # Save to static directory under separator subfolder
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
+        separator_dir = os.path.join(static_dir, "separator")
+        os.makedirs(separator_dir, exist_ok=True)
+        
+        # Copy files to static directory
+        static_vocals_path = os.path.join(separator_dir, f"vocals_{uuid.uuid4()}.wav")
+        static_instruments_path = os.path.join(separator_dir, f"instruments_{uuid.uuid4()}.wav")
+        
+        with open(vocals_path, 'rb') as f_in:
+            with open(static_vocals_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+                
+        with open(instruments_path, 'rb') as f_in:
+            with open(static_instruments_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+        
+        # Build URL paths
+        vocals_url = f"/static/separator/{os.path.basename(static_vocals_path)}"
+        instruments_url = f"/static/separator/{os.path.basename(static_instruments_path)}"
+        
+        # Return paths to the static files
         return {
             "vocals_path": vocals_path,
             "instruments_path": instruments_path,
+            "vocals_url": vocals_url,
+            "instruments_url": instruments_url,
             "sample_rate": sr
         }
         
@@ -370,15 +396,17 @@ async def merge_audio_tracks(
         # Create final output path in static directory for serving
         filename = output_filename or f"merged_{uuid.uuid4()}.wav"
         static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-        os.makedirs(static_dir, exist_ok=True)
-        final_output_path = os.path.join(static_dir, filename)
+        merge_dir = os.path.join(static_dir, "merge")
+        os.makedirs(merge_dir, exist_ok=True)
+        
+        final_output_path = os.path.join(merge_dir, filename)
         
         # Save content to static directory
         with open(final_output_path, 'wb') as f:
             f.write(file_content)
             
         # Build URL path
-        url_path = f"/static/{os.path.basename(final_output_path)}"
+        url_path = f"/static/merge/{os.path.basename(final_output_path)}"
         
         # Clean up the temporary file
         try:
@@ -459,14 +487,15 @@ async def merge_uploaded_audio(
         # Save to static directory for serving
         filename = f"merged_{uuid.uuid4()}.wav"
         static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static")
-        os.makedirs(static_dir, exist_ok=True)
-        final_output_path = os.path.join(static_dir, filename)
+        merge_uploads_dir = os.path.join(static_dir, "merge-uploads")
+        os.makedirs(merge_uploads_dir, exist_ok=True)
+        final_output_path = os.path.join(merge_uploads_dir, filename)
         
         with open(final_output_path, 'wb') as f:
             f.write(file_content)
             
         # Build URL path
-        url_path = f"/static/{os.path.basename(final_output_path)}"
+        url_path = f"/static/merge-uploads/{os.path.basename(final_output_path)}"
         
         return JSONResponse({
             "status": "success",
